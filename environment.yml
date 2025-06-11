@@ -1,0 +1,9 @@
+name: gscm_gee
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - geedim=1.7.1
+  - geemap=0.35.3
+  - ipywidgets
+  - python=3.11

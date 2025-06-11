@@ -1,0 +1,8 @@
+# temporary files
+*.asv
+*.ipynb_checkpoints*
+*__pycache__*
+*.DS_Store
+
+# figures - must be uploaded directly to GitHub
+figures/
