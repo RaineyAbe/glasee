@@ -7,7 +7,9 @@ Rainey Aberle
 import ee
 import geedim as gd
 import datetime
+import numpy as np
 
+# Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
 current_datetime_str = str(current_datetime).replace(' ','').replace(':','').replace('-','').replace('.','')
 
@@ -71,56 +73,177 @@ def query_gee_for_dem(aoi):
     return dem
 
 
-def split_date_range_by_year(date_start, date_end, month_start, month_end):
+def determine_required_image_scale(aoi, dataset):
     """
-    Split a date range into smaller ranges by year. Date and month ranges are inclusive. 
+    Estimate the appropriate spatial resolution (scale) in meters for processing satellite imagery
+    in Google Earth Engine (GEE) based on the user memory limit of 10 MB.
+
+    This function calculates the approximate size in MB of a single image over the given area of 
+    interest (AOI) at its native scale. If the estimated image size exceeds the GEE user 
+    memory limit, it calculates a coarser spatial scale to stay within the limit.
+
+    Adapted from Daniel Wiell's approach:
+    https://gis.stackexchange.com/questions/432948/print-ndvi-image-file-size-in-google-earth-engine
 
     Parameters
     ----------
+    aoi : ee.Geometry.Polygon
+        Area of interest over which images will be queried and processed.
+    dataset : str
+        Image dataset name. Supported values: "Sentinel-2_TOA", "Sentinel-2_SR", or "Landsat".
+
+    Returns
+    -------
+    scale_required : int or float
+        Required image scale in meters to keep image size under GEE's 10 MB user memory limit.
+    """
+    # Select dataset parameters
+    if dataset in ['Sentinel-2_TOA', 'Sentinel-2_SR']:
+        dataset_str = 'COPERNICUS/S2_HARMONIZED'
+        refl_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
+        rgb_bands = ['B4', 'B3', 'B2']
+    elif dataset == 'Landsat':
+        dataset_str = 'LANDSAT/LC08/C02/T1_L2'
+        refl_bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7']
+        rgb_bands = ['SR_B4', 'SR_B3', 'SR_B2']
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset}")
+
+    # Grab and clip a sample image
+    image = (
+        ee.ImageCollection(dataset_str)
+        .filterDate('2022-05-01', '2022-05-31')
+        .filterBounds(aoi)
+        .first()
+        .clip(aoi)
+        .select(refl_bands)
+    )
+
+    # Get native scale of RGB band in meters
+    scale = image.select(rgb_bands[0]).projection().nominalScale().getInfo()
+
+    # Estimate the number of bits contained in each band
+    def get_bits(band):
+        data_type = ee.Dictionary(ee.Dictionary(band).get('data_type'))
+        precision = ee.String(data_type.get('precision'))
+
+        def int_bits():
+            min_val = ee.Number(data_type.get('min'))
+            max_val = ee.Number(data_type.get('max'))
+
+            types = ee.FeatureCollection([
+                ee.Feature(None, {'bits': 8, 'min': -2**7,   'max': 2**7}),
+                ee.Feature(None, {'bits': 8, 'min': 0,       'max': 2**8}),
+                ee.Feature(None, {'bits': 16, 'min': -2**15, 'max': 2**15}),
+                ee.Feature(None, {'bits': 16, 'min': 0,      'max': 2**16}),
+                ee.Feature(None, {'bits': 32, 'min': -2**31, 'max': 2**31}),
+                ee.Feature(None, {'bits': 32, 'min': 0,      'max': 2**32}),
+            ])
+
+            match = (
+                types
+                .filter(ee.Filter.lte('min', min_val))
+                .filter(ee.Filter.gt('max', max_val))
+                .merge(ee.FeatureCollection([ee.Feature(None, {'bits': 64})]))
+                .first()
+            )
+            return ee.Number(match.get('bits'))
+
+        return ee.Algorithms.If(
+            precision.equals('int'),
+            int_bits(),
+            ee.Algorithms.If(precision.equals('float'), ee.Number(32), ee.Number(64))
+        )
+
+    # Describe image and sum total bits across all bands
+    image_description = ee.Dictionary(ee.Algorithms.Describe(image))
+    bands = ee.List(image_description.get('bands'))
+    total_bits = ee.Number(bands.map(get_bits).reduce(ee.Reducer.sum()))
+
+    # Estimate image size in bytes: (bits / 8) * number of pixels
+    pixel_count = aoi.area().divide(scale ** 2)
+    im_size_bytes = ee.Number(total_bits.divide(8).multiply(pixel_count).ceil()).getInfo()
+    im_size_mb = im_size_bytes / (1024**2)
+    print(f"Estimated image size over AOI for {dataset}: {np.round(im_size_mb, 2)} MB")
+
+    # Check if size exceeds GEE memory limit
+    if im_size_mb > 10:
+        # rounded up to the nearest 10 m
+        scale_required = int(np.ceil(scale * np.sqrt(im_size_mb / 10) / 10.0)) * 10 
+        print(f"Image size exceeds GEE's 10 MB limit. Using scale = {np.round(scale_required, 1)} m")
+    else:
+        scale_required = scale
+        print(f"Image size is within GEE limit. Using default scale = {scale_required} m")
+
+    return scale_required
+
+
+def split_date_range_by_year(dataset, date_start, date_end, month_start, month_end):
+    """
+    Split a date range into smaller ranges by year. Date and month ranges are inclusive. 
+    Adjusts based on dataset availability:
+        - Sentinel-2_TOA: available from 2016
+        - Sentinel-2_SR: available from 2019
+        - Landsat: available from 2013
+
+    Parameters
+    ----------
+    dataset: str
+        Image dataset name. Supported values: "Sentinel-2_TOA", "Sentinel-2_SR", or "Landsat".
     date_start: str
         Start date for the image search in the format 'YYYY-MM-DD'.
     date_end: str
         End date for the image search in the format 'YYYY-MM-DD'.
     month_start: int
-        Start month for the image search (1-12).
+        Start month for the image search (1–12).
     month_end: int
-        End month for the image search (1-12).
+        End month for the image search (1–12).
 
     Returns
-    ----------
-    ranges: list
-        List of tuples containing the start and end dates for each year in the range.
+    -------
+    ranges: list of tuples
+        List of (start_date, end_date) strings for each valid year in the date range.
     """
-    # Convert date strings to datetime format
+    # Convert input strings to date objects
     date_start = datetime.datetime.strptime(date_start, "%Y-%m-%d").date()
     date_end = datetime.datetime.strptime(date_end, "%Y-%m-%d").date()
-    
-    # Identify start and end dates
-    year_start = date_start.year
+
+    # Dataset-specific temporal coverage start years
+    dataset_start_years = {
+        "Sentinel-2_TOA": 2016,
+        "Sentinel-2_SR": 2019,
+        "Landsat": 2013,
+    }
+    if dataset not in dataset_start_years:
+        raise ValueError(f"Unsupported dataset: {dataset}")
+
+    # Enforce minimum start year
+    min_year = dataset_start_years[dataset]
+    year_start = max(date_start.year, min_year)
     year_end = date_end.year
-    
-    # Iterate over years
+
+    # Create date ranges per year
     ranges = []
     for year in range(year_start, year_end + 1):
-        # Construct the start and end dates for this year
+        # First day of start month
         start = datetime.date(year, month_start, 1)
-        # Determine the last day of the end month
+        # Last day of end month
         if month_end == 12:
             end = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1)
         else:
             end = datetime.date(year, month_end + 1, 1) - datetime.timedelta(days=1)
-        
-        # Clip to the overall date_start and date_end
+
+        # Clip to original date range
         start = max(start, date_start)
         end = min(end, date_end)
-        
+
         if start <= end:
             ranges.append((start.isoformat(), end.isoformat()))
-    
+
     return ranges
 
 
-def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month_end, fill_portion, mask_clouds):
+def query_gee_for_imagery(dataset, aoi, scale, date_start, date_end, month_start, month_end, fill_portion, mask_clouds):
     """
     Query GEE for imagery over study site. The function will return a collection of pre-processed, clipped images 
     that meet the search criteria. Images captured on the same day will be mosaicked together to increase spatial coverage.
@@ -128,9 +251,11 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
     Parameters
     ----------
     dataset: str
-        Name of the dataset to query for. Options are 'Landsat', 'Sentinel-2_SR', or 'Sentinel-2_TOA'.
+        Image dataset name. Supported values: "Sentinel-2_TOA", "Sentinel-2_SR", or "Landsat".
     aoi: ee.Geometry
         Area of interest (AOI) to query for imagery.
+    scale: int | float
+        Image scale. 
     date_start: str
         Start date for the image search in the format 'YYYY-MM-DD'.
     date_end: str
@@ -149,11 +274,9 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
     ----------
     im_mosaics: ee.ImageCollection
         Image collection of pre-processed, clipped images that meet the search criteria. 
-    """
-
-    print(f'Querying GEE for {dataset} image collection')
-
+    """ 
     # Define image collection
+    print(f'Querying GEE for {dataset} image collection')
     if dataset=='Landsat':
         im_col_l8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(date_start, date_end, 
                                                                                     region=aoi, 
@@ -166,7 +289,6 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         refl_bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7']
         rgb_bands = ['SR_B4', 'SR_B3', 'SR_B2']
         ndsi_bands = ['SR_B3', 'SR_B6']
-        resolution = 30
     elif 'Sentinel-2' in dataset:
         if dataset=='Sentinel-2_SR':
             im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(date_start, date_end, 
@@ -180,11 +302,16 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         refl_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
         rgb_bands = ['B4', 'B3', 'B2']
         ndsi_bands = ['B3', 'B11']
-        resolution = 10
+
+    # Reproject to user-specified image scale
+    crs = im_col.first().select(rgb_bands[0]).projection()
+    def resample_scale(im):
+        return im.reproject(crs=crs, scale=scale)
+    im_col = im_col.map(resample_scale)
 
     # Filter collection by month range
     im_col = im_col.filter(ee.Filter.calendarRange(month_start, month_end, 'month'))
-
+    
     # Clip to AOI
     def clip_to_aoi(im):
         return im.clip(aoi)
@@ -231,7 +358,7 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         pixel_count = im.select(rgb_bands[0]).unmask().reduceRegion(
             reducer = ee.Reducer.count(),
             geometry = aoi,
-            scale = resolution,
+            scale = scale,
             maxPixels = 1e9,
             bestEffort = True
         ).get(rgb_bands[0])
@@ -240,7 +367,7 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         unmasked_pixel_count = im.select(rgb_bands[0]).reduceRegion(
             reducer = ee.Reducer.count(),
             geometry = aoi,
-            scale = resolution,
+            scale = scale,
             maxPixels = 1e9,
             bestEffort = True
         ).get(rgb_bands[0])
@@ -266,8 +393,8 @@ def classify_image_collection(collection, dataset):
     collection: ee.ImageCollection
         Image collection to classify.
     dataset: str
-        Name of the dataset used for classification. Options are 'Landsat', 'Sentinel-2_SR', or 'Sentinel-2_TOA'.
-
+        Image dataset name. Supported values: "Sentinel-2_TOA", "Sentinel-2_SR", or "Landsat".
+    
     Returns
     ----------
     classified_collection: ee.ImageCollection
@@ -324,8 +451,7 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, scale=30,
     
     Returns
     ----------
-    statistics: ee.FeatureCollection
-        Feature collection of snow cover statistics for each image in the collection.
+    task
     """
 
     print('Calculating snow cover statistics')
@@ -444,4 +570,4 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, scale=30,
     print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file name: {file_name_prefix}')
     print('To monitor tasks, go to your GEE Task Manager: https://code.earthengine.google.com/tasks')
 
-    return statistics
+    return task
