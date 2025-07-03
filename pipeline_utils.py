@@ -367,7 +367,7 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, dataset,
     ----------
     task
     """
-
+    import time
     print('Calculating snow cover statistics')
 
     # Determine image scale of dataset
@@ -489,6 +489,20 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, dataset,
         fileNamePrefix=file_name_prefix, 
         fileFormat='CSV', 
         )
+
+    # evaluate number of tasks in queue
+    def check_queue():
+        in_queue = 0
+        for task in ee.batch.Task.list():
+            if task.state == 'READY':
+                in_queue += 1 # count the queue
+        return in_queue
+    
+    # wait until task queue is < 3000
+    queue = check_queue() # check length of queue
+    while queue >= 3000: # while it's 3000 or more
+        time.sleep(30) # wait 30 seconds
+        queue = check_queue() # keep checking
     task.start()
     print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file name: {file_name_prefix}')
     print('To monitor tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks')
