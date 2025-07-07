@@ -46,9 +46,7 @@ $ python -m ipykernel install --name glasee
 
 ## Examples
 
-The pipeline can be run for a single site (`snow_classification_pipeline_single-site.ipynb`) or multiple sites at once (`snow_classification_pipeline_multi-site.ipynb`). 
-
-Snow cover statistics for each site will be exported in multiple CSV files. To compile the CSV files for each site and remove any empty files, see the `post_process.ipynb` notebook. 
+The pipeline can be run for a single site or multiple sites at once using `glasee_pipeline.ipynb`. Snow cover statistics for each site will be exported in multiple CSV files. To compile the CSV files for each site and remove any empty files, see the `compile_CSVs.ipynb` notebook. 
 
 Please refer to each notebook for more information.
 
@@ -62,9 +60,9 @@ The date range specified by the user is split into smaller ranges before exporti
 - 700 km<sup>2</sup> <= AOI < 1100 km<sup>2</sup>: split by week
 - AOI >= 1100 km<sup>2</sup>: split by day
 
-For glaciers with areas > 3000 km<sup>2</sup>, splitting the date range by day is often not enough to avoid computation time out. Therefore, the images are automatically upscaled to 200 m resolution, which we found empirically to work for these largest glaciers.
+For glaciers with areas > 3000 km<sup>2</sup>, splitting the date range by day is usually not enough to avoid computation time out. Therefore, the images are automatically upscaled to 200 m resolution, which we found empirically to work for glaciers larger than this threshold.
 
-Especially for the largest glaciers, many exports may be empty, depending on image availability. To compile all results and remove empty CSVs from your Google Drive folder, see the `post_processing.ipynb` notebook in this repo. 
+Especially for the largest glaciers, many exports may be empty, depending on image availability. To compile all results and remove empty CSVs from your Google Drive folder, see the `compile_CSVs.ipynb` notebook in this repo. 
 
 ## Citation
 
