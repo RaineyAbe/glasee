@@ -1,9 +1,9 @@
-name: gscm_gee
+name: glasee
 channels:
   - conda-forge
   - defaults
 dependencies:
   - geedim=1.7.1
   - geemap=0.35.3
-  - ipywidgets
+  - jupyterlab
   - python=3.11

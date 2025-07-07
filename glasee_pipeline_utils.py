@@ -7,7 +7,7 @@ Rainey Aberle
 import ee
 import geedim as gd
 import datetime
-import numpy as np
+import time
 
 # Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
@@ -31,7 +31,7 @@ def query_gee_for_dem(aoi):
     
     print('\nQuerying GEE for DEM')
 
-    # Determine whether to use ArcticDEM or NASADEM
+    # Determine whether to use ArcticDEM, REMA, or NASADEM
     # Check for ArcticDEM coverage
     arcticdem_coverage = ee.FeatureCollection('projects/ee-raineyaberle/assets/glacier-snow-cover-mapping/ArcticDEM_Mosaic_coverage')
     intersects = arcticdem_coverage.geometry().intersects(aoi).getInfo()
@@ -53,6 +53,11 @@ def query_gee_for_dem(aoi):
         else:
             dem_name = "NASADEM"
             dem_string = "NASA/NASADEM_HGT/001"
+
+    # If below -50 degrees latitude, use REMA
+    elif aoi.centroid().coordinates().get(1).getInfo() < -50:
+        dem_name = "REMA Mosaic"
+        dem_string = "UMN/PGC/REMA/V1_1/8m"
         
     # Otherwise, use NASADEM
     else:
@@ -64,8 +69,12 @@ def query_gee_for_dem(aoi):
     # Get the DEM, clip to AOI
     dem = ee.Image(dem_string).select('elevation').clip(aoi)
 
+    # Mask no data values
+    # mask = dem.eq(-9999)
+    # dem = dem.updateMask(mask)
+
     # Reproject to the EGM96 geoid if using ArcticDEM
-    if dem_name=='ArcticDEM Mosaic':
+    if (dem_name=='ArcticDEM Mosaic') | (dem_name=='REMA Mosaic'):
         geoid = ee.Image('projects/ee-raineyaberle/assets/glacier-snow-cover-mapping/us_nga_egm96_15')
         dem = dem.subtract(geoid)
     dem = dem.set({'vertical_datum': 'EGM96 geoid'})
@@ -84,6 +93,10 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
         - Sentinel-2_TOA: available from 2016
         - Sentinel-2_SR: available from 2019
         - Landsat 8/9: available from 2013
+
+    For the largest glaciers, user memory limits will still be exceeded, even when querying at daily resolution. 
+    Therefore, this function will also return the image spatial resolution (scale) required to prevent computation time out.
+    For glaciers within the area limits, it will return the default scale for Sentinel-2 (10 m) and Landsat 8/9 (30 m). 
 
     Parameters
     ----------
@@ -129,7 +142,7 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
     if aoi_area < 500e6:
         print('AOI area < 500 km2 — splitting date range by month.')
         for year in range(date_start.year, date_end.year + 1):
-            for month in range(1, 13):
+            for month in range(month_start, month_end+1):
                 if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
                     continue
                 start = datetime.date(year, month, 1)
@@ -160,11 +173,23 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
             current += datetime.timedelta(days=1)
 
     print(f"Number of date ranges = {len(ranges)}")
+
+    # Determine image scale
+
     return ranges
 
 
 
-def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month_end, fill_portion, mask_clouds):
+def query_gee_for_imagery(dataset: str = 'Landsat', 
+                          aoi: ee.Geometry = None, 
+                          date_start: str = '2020-06-01', 
+                          date_end: str = '2020-11-01', 
+                          month_start: int = 6, 
+                          month_end: int = 10, 
+                          fill_portion: int = 70, 
+                          mask_clouds: bool = True,
+                          scale: int = None,
+                          verbose: bool = True):
     """
     Query GEE for imagery over study site. The function will return a collection of pre-processed, clipped images 
     that meet the search criteria. Images captured on the same day will be mosaicked together to increase spatial coverage.
@@ -183,19 +208,23 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         Start month for the image search (1-12).
     month_end: int
         End month for the image search (1-12).
-    fill_portion: float
+    fill_portion: int | float
         Minimum percent coverage of the AOI required for an image to be included in the collection (0-100).
     mask_clouds: bool
         Whether to mask clouds in the imagery. If True, clouds will be masked using the dataset's cloud mask. 
         If False, no cloud masking will be applied.
+    verbose: bool
+        Whether to ouput some verbage. 
     
     Returns
     ----------
     im_mosaics: ee.ImageCollection
         Image collection of pre-processed, clipped images that meet the search criteria. 
     """ 
+    if verbose:
+        print(f'Querying GEE for {dataset} image collection')
+
     # Define image collection
-    print(f'Querying GEE for {dataset} image collection')
     if dataset=='Landsat':
         im_col_l8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(date_start, date_end, 
                                                                                     region=aoi, 
@@ -208,7 +237,7 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         refl_bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7']
         rgb_bands = ['SR_B4', 'SR_B3', 'SR_B2']
         ndsi_bands = ['SR_B3', 'SR_B6']
-        scale = 30
+
     elif 'Sentinel-2' in dataset:
         if dataset=='Sentinel-2_SR':
             im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(date_start, date_end, 
@@ -222,7 +251,13 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
         refl_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
         rgb_bands = ['B4', 'B3', 'B2']
         ndsi_bands = ['B3', 'B11']
-        scale = 10
+    
+    # Define default image scale if not provided
+    if not scale:
+        scale = 30 if (dataset=='Landsat') else 10
+        rescale = False
+    else:
+        rescale = True
 
     # Clip to AOI
     def clip_to_aoi(im):
@@ -234,6 +269,11 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
 
     # Select needed bands
     im_col = im_col.select(refl_bands)
+
+    # Upscale if needed
+    def rescale(im):
+        return im.reproject(im.select(rgb_bands[0]).projection(), scale=scale)
+    im_col = im_col.map(rescale)
     
     # Divide by image scaler
     def divide_im_by_scaler(im):
@@ -299,7 +339,9 @@ def query_gee_for_imagery(dataset, aoi, date_start, date_end, month_start, month
     return ee.ImageCollection(im_mosaics)
 
 
-def classify_image_collection(collection, dataset):
+def classify_image_collection(collection: ee.ImageCollection, 
+                              dataset: str, 
+                              verbose: bool = True):
     """
     Classify the image collection using a pre-trained classifier. The classifier is trained on a set of training data
     that is specific to the dataset. 
@@ -310,14 +352,15 @@ def classify_image_collection(collection, dataset):
         Image collection to classify.
     dataset: str
         Image dataset name. Supported values: "Sentinel-2_TOA", "Sentinel-2_SR", or "Landsat".
+    verbose
     
     Returns
     ----------
     classified_collection: ee.ImageCollection
         Classified image collection.
     """
-
-    print('Classifying image collection')
+    if verbose:
+        print('Classifying image collection')
 
     # Retrain classifier
     if dataset=='Landsat':
@@ -342,9 +385,14 @@ def classify_image_collection(collection, dataset):
     return ee.ImageCollection(classified_collection)
 
 
-def calculate_snow_cover_statistics(image_collection, dem, aoi, dataset,
-                                    out_folder='glacier_snow_cover_exports', 
-                                    file_name_prefix=f'snow_cover_stats_{current_datetime_str}'):
+def calculate_snow_cover_statistics(image_collection: ee.ImageCollection, 
+                                    dem: ee.Image, 
+                                    aoi: ee.Geometry.Polygon, 
+                                    dataset: str,
+                                    scale: int = None,
+                                    out_folder: str = 'glacier_snow_cover_exports', 
+                                    file_name_prefix: str = f'snow_cover_stats_{current_datetime_str}',
+                                    verbose: bool = True):
     """
     Calculate snow cover statistics for each image in the collection. The function will calculate the following
     statistics for each image: snow area, ice area, rock area, water area, glacier area, transient AAR, SLA,
@@ -362,19 +410,19 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, dataset,
         Name of Google Drive Folder where statistics will be saved as CSV.
     file_name_prefix: str
         Prefix for output file name.
+    verbose: bool
+        Whether to output verbage. 
     
     Returns
     ----------
     task
     """
-    import time
-    print('Calculating snow cover statistics')
+    if verbose:
+        print('Calculating snow cover statistics')
 
-    # Determine image scale of dataset
-    if dataset=='Landsat':
-        scale = 30
-    else:
-        scale = 10
+    # Determine spatial scale
+    if not scale:
+        scale = 30 if (dataset=='Landsat') else 10
 
     def process_image(image):
         # Grab the image date
@@ -504,15 +552,27 @@ def calculate_snow_cover_statistics(image_collection, dem, aoi, dataset,
         time.sleep(30) # wait 30 seconds
         queue = check_queue() # keep checking
     task.start()
-    print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file name: {file_name_prefix}')
-    print('To monitor tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks')
+
+    if verbose:
+        print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file name: {file_name_prefix}')
 
     return task
 
 
-def run_classification_pipeline(aoi: ee.Geometry.Polygon, aoi_area: float | int, dem: ee.Image, 
-                                dataset: str, date_start: str, date_end: str, month_start: int, month_end: int, 
-                                min_aoi_coverage: int | float, mask_clouds: bool, out_folder: str, glac_id: str):
+def run_classification_pipeline(aoi: ee.Geometry.Polygon = None, 
+                                aoi_area: float = None, 
+                                dem: ee.Image = None, 
+                                dataset: str = None, 
+                                date_start: str = None, 
+                                date_end: str = None, 
+                                month_start: int = 6, 
+                                month_end: int = 10, 
+                                min_aoi_coverage: int = 70, 
+                                mask_clouds: bool = True, 
+                                out_folder: str = None, 
+                                glac_id: str = None,
+                                scale: int = None,
+                                verbose: bool = False):
     """
     Run the classification pipeline for a given AOI and image dataset. 
 
@@ -543,6 +603,8 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon, aoi_area: float | int,
         Name of Google Drive folder where results will be exported. 
     glac_id: str
         Glacier ID used in output file names.
+    scale: int
+        Image scale for analysis. If none provided, will use the default scale for each imagery dataset.
 
     Returns
     ----------
@@ -553,23 +615,34 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon, aoi_area: float | int,
         raise ValueError(
             f"Dataset not recognized: {dataset}. Please select from: 'Sentinel-2_TOA', 'Sentinel-2_SR', or 'Landsat'."
         )
+    
+    # Determine spatial scale
+    if aoi_area > 3000e6:
+        scale = 200
+        print('AOI area > 3000 km2, upscaling imagery to 200 m resolution.')
+    elif not scale:
+        scale = 30 if (dataset=='Landsat') else 10
 
     # Split date range into smaller date ranges as necessary
     date_ranges = split_date_range(aoi_area, dataset, date_start, date_end, month_start, month_end)
     
     # Run the workflow for each day in date range separately
+    print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file naming convention:', 
+          f"{glac_id}_{dataset}_snow_cover_stats_DATE-START_DATE-END.csv")
+    print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks \n')
     for date_range in date_ranges:
-        print('\n', date_range)
+        print(date_range)
     
         # Query GEE for imagery
         image_collection = query_gee_for_imagery(dataset, aoi, date_range[0], date_range[1], month_start, month_end, 
-                                                 min_aoi_coverage, mask_clouds)
+                                                 min_aoi_coverage, mask_clouds, scale, verbose=verbose)
     
         # Classify image collection
-        classified_collection = classify_image_collection(image_collection, dataset)
+        classified_collection = classify_image_collection(image_collection, dataset, verbose=verbose)
     
         # Calculate snow cover statistics, export to Google Drive
-        task = calculate_snow_cover_statistics(classified_collection, dem, aoi, dataset, out_folder,
-                                               file_name_prefix=f"{glac_id}_{dataset}_snow_cover_stats_{date_range[0]}_{date_range[1]}")
+        _ = calculate_snow_cover_statistics(classified_collection, dem, aoi, dataset, scale, out_folder,
+                                            file_name_prefix=f"{glac_id}_{dataset}_snow_cover_stats_{date_range[0]}_{date_range[1]}",
+                                            verbose=verbose)
 
 
