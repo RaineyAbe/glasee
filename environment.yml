@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - geedim
-  - geemap
-  - jupyterlab
-  - python=3.13
+  - geedim=1.7.1
+  - geemap=0.35.3
+  - ipywidgets
+  - python=3.11
