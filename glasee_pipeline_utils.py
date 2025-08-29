@@ -548,10 +548,12 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
-    # print(f'...current queue length {queue}')
+    print(f'...current queue length {queue}')
     while queue >= 2999: # while it's 3000 or more
         #estimate processing time & wait for that long
-        sleep_time = 40*(glacier_area/1e6)
+        print(feature.get('glacier_area_m2'))
+        sleep_time = 40*(feature.get('glacier_area_m2')/1e6)
+        print(sleep_time)
         time.sleep(sleep_time) # wait specified time in seconds based on glacier area
         queue = check_queue() # keep checking
         
