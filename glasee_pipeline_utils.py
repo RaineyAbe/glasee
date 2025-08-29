@@ -549,13 +549,18 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
     # print(f'...current queue length {queue}')
-    while queue >= 3000: # while it's 3000 or more
-        if snow_area+ice_area > 1e8:
-            time.sleep(120) # wait 120 seconds
-            queue = check_queue() # keep checking
-        else:
-            time.sleep(30) # wait 30 seconds
-            queue = check_queue() # keep checking
+    while queue >= 2999: # while it's 3000 or more
+        #estimate processing time & wait for that long
+        sleep_time = 40*(glacier_area/1e6)
+        time.sleep(sleep_time) # wait specified time in seconds based on glacier area
+        queue = check_queue() # keep checking
+        
+        # if snow_area+ice_area > 1e8:
+        #     time.sleep(120) # wait 120 seconds
+        #     queue = check_queue() # keep checking
+        # else:
+        #     time.sleep(30) # wait 30 seconds
+        #     queue = check_queue() # keep checking
     task.start()
 
     if verbose:
@@ -634,7 +639,7 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
     # Run the workflow for each day in date range separately
     print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file naming convention:', 
           f"{glac_id}_{dataset}_snow_cover_stats_DATE-START_DATE-END.csv")
-    print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks \n')
+    print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks')
     for date_range in date_ranges:
         print(date_range)
     
