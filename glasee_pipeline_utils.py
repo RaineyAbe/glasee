@@ -59,7 +59,7 @@ def query_gee_for_dem(aoi):
         dem_name = "REMA Mosaic"
         dem_string = "UMN/PGC/REMA/V1_1/8m"
         
-    # Otherwise, use NASADEM
+    # Otherwise, use NASADEM (may want to change to the Copernicus DEM or EarthDEM if they are on GEE)
     else:
         dem_name = "NASADEM"
         dem_string = "NASA/NASADEM_HGT/001"
@@ -182,10 +182,10 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
 
 def query_gee_for_imagery(dataset: str = 'Landsat', 
                           aoi: ee.Geometry = None, 
-                          date_start: str = '2020-06-01', 
-                          date_end: str = '2020-11-01', 
-                          month_start: int = 6, 
-                          month_end: int = 10, 
+                          date_start: str = '2020-01-01', #default date start
+                          date_end: str = '2020-12-31', #default date end
+                          month_start: int = 5, #default month start (May=5)
+                          month_end: int = 10, #default month end (Oct=10)
                           fill_portion: int = 70, 
                           mask_clouds: bool = True,
                           scale: int = None,
@@ -548,9 +548,14 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
+    # print(f'...current queue length {queue}')
     while queue >= 3000: # while it's 3000 or more
-        time.sleep(30) # wait 30 seconds
-        queue = check_queue() # keep checking
+        if snow_area+ice_area > 1e8:
+            time.sleep(120) # wait 120 seconds
+            queue = check_queue() # keep checking
+        else:
+            time.sleep(30) # wait 30 seconds
+            queue = check_queue() # keep checking
     task.start()
 
     if verbose:
@@ -636,7 +641,12 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
         # Query GEE for imagery
         image_collection = query_gee_for_imagery(dataset, aoi, date_range[0], date_range[1], month_start, month_end, 
                                                  min_aoi_coverage, mask_clouds, scale, verbose=verbose)
-    
+
+        # #if the image collection is empty, let the user know
+        # is_empty_test = image_collection.size().eq(0).getInfo()
+        # if is_empty_test == 1:
+        #     print(f"no images returned")
+        
         # Classify image collection
         classified_collection = classify_image_collection(image_collection, dataset, verbose=verbose)
     
