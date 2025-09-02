@@ -8,6 +8,7 @@ import ee
 import geedim as gd
 import datetime
 import time
+import numpy as np
 
 # Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
@@ -549,20 +550,17 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
     print(f'...current queue length {queue}')
-    while queue >= 2999: # while it's 3000 or more
+    while queue >= 2998: # while it's 3000 or more
         #estimate processing time & wait for that long
-        print(feature.get('glacier_area_m2'))
-        sleep_time = 40*(feature.get('glacier_area_m2')/1e6)
-        print(sleep_time)
+        sleep_time = 30*int(np.sqrt(aoi.area().getInfo()/1e6))
+        print(f"sleep time = {sleep_time} s")
+        
         time.sleep(sleep_time) # wait specified time in seconds based on glacier area
         queue = check_queue() # keep checking
         
-        # if snow_area+ice_area > 1e8:
-        #     time.sleep(120) # wait 120 seconds
-        #     queue = check_queue() # keep checking
-        # else:
         #     time.sleep(30) # wait 30 seconds
         #     queue = check_queue() # keep checking
+        
     task.start()
 
     if verbose:
