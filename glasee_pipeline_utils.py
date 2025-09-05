@@ -140,8 +140,21 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
     ranges = []
 
     # Determine splitting strategy
-    if aoi_area < 500e6:
-        print('AOI area < 500 km2 — splitting date range by month.')
+    if aoi_area < 250e6:
+        print('AOI area < 250 km2 — splitting date range by month.')
+        for year in range(date_start.year, date_end.year + 1):
+            for month in range(month_start, month_end+1):
+                if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
+                    continue
+                start = datetime.date(year, month, 1)
+                end = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1) if month == 12 else datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+                start = max(start, date_start)
+                end = min(end, date_end)
+                if start <= end:
+                    ranges.append((start.isoformat(), end.isoformat()))
+        
+    elif aoi_area < 500e6: #same querying for 250-500 km^2 as smaller glaciers unless we start getting errors
+        print('250 km2 <= AOI < 500 km2 — splitting date range by month.')
         for year in range(date_start.year, date_end.year + 1):
             for month in range(month_start, month_end+1):
                 if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
@@ -627,9 +640,19 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
         )
     
     # Determine spatial scale
-    if aoi_area > 3000e6:
-        scale = 200
-        print('AOI area > 3000 km2, upscaling imagery to 200 m resolution.')
+    if aoi_area > 250e6:
+        if aoi_area < 500e6:
+            scale = 30
+            print('AOI area between 250-500 km2, upscaling imagery to 30 m resolution.')
+        elif aoi_area < 1100e6:
+            scale = 90
+            print('AOI area between 500-1100 km2, upscaling imagery to 90 m resolution.')
+        elif aoi_area < 3000e6:
+            scale = 150
+            print('AOI area between 1100-3000 km2, upscaling imagery to 150 m resolution.')
+        else 
+            scale = 210
+            print('AOI area > 3000 km2, upscaling imagery to 210 m resolution.')
     elif not scale:
         scale = 30 if (dataset=='Landsat') else 10
 
