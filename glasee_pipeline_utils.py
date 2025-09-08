@@ -469,9 +469,19 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         transient_aar = ee.Number(snow_area).divide(ee.Number(glacier_area))
 
         # Estimate snowline altitude (SLA) using the transient AAR and the DEM
-        sla_percentile = (ee.Number(1).subtract(ee.Number(transient_aar)))
-        sla = dem.reduceRegion(
-            reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).multiply(100).toInt()])),
+        # sla_percentile = (ee.Number(1).subtract(ee.Number(transient_aar)))
+        # sla = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).multiply(100).toInt()])),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        # Try alternate: use 5th percentile of snow-covered elevations instead of the AAR to minimize debris effects
+        snow_dem = dem.updateMask(snow_mask);
+        sla_percentile = (ee.Number(5))
+        sla = snow_dem.reduceRegion(
+            reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).toInt()])),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
@@ -480,26 +490,36 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
 
         # Estimate upper and lower bounds for the SLA
         # upper bound: snow-free pixels above the SLA
-        snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
-        above_sla_mask = dem.gt(ee.Number(sla))
-        upper_mask = snow_free_mask.And(above_sla_mask)
-        upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-            reducer=ee.Reducer.sum(),
-            geometry=aoi,
-            scale=scale,
-            maxPixels=1e9,
-            bestEffort=True
-        ).get('classification')
-        sla_upper_percentile = (ee.Number(sla_percentile)
-                                .add(ee.Number(upper_mask_area)
-                                     .divide(ee.Number(aoi.area()))))
-        sla_upper = dem.reduceRegion(
-            reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
+        # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
+        # above_sla_mask = dem.gt(ee.Number(sla))
+        # upper_mask = snow_free_mask.And(above_sla_mask)
+        # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        #     reducer=ee.Reducer.sum(),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        # ).get('classification')
+        # sla_upper_percentile = (ee.Number(sla_percentile)
+        #                         .add(ee.Number(upper_mask_area)
+        #                              .divide(ee.Number(aoi.area()))))
+        # sla_upper = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        #alternate: use the 10th percentile of snowy pixels
+        sla_upper_percentile = (ee.Number(10))
+        sla_upper = snow_dem.reduceRegion(
+            reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).toInt()])),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
             ).get('elevation')
+        
         # lower bound: snow-covered pixels below the SLA
         below_sla_mask = dem.lt(ee.Number(sla))
         lower_mask = snow_mask.And(below_sla_mask)
@@ -544,11 +564,13 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     statistics = ee.FeatureCollection(image_collection.map(process_image))
 
     # Export to Google Drive folder
+    alt_fileName = file_name_prefix+'_5percsnow';
+    # print(alt_fileName)
     task = ee.batch.Export.table.toDrive(
         collection=statistics, 
-        description=file_name_prefix, 
+        description=alt_fileName, 
         folder=out_folder, 
-        fileNamePrefix=file_name_prefix, 
+        fileNamePrefix=alt_fileName, #default is file_name_prefix, change for testing
         fileFormat='CSV', 
         )
 
@@ -650,7 +672,7 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
         elif aoi_area < 3000e6:
             scale = 150
             print('AOI area between 1100-3000 km2, upscaling imagery to 150 m resolution.')
-        else 
+        else:
             scale = 210
             print('AOI area > 3000 km2, upscaling imagery to 210 m resolution.')
     elif not scale:
