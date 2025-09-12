@@ -154,7 +154,7 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
                     ranges.append((start.isoformat(), end.isoformat()))
         
     elif aoi_area < 500e6: 
-        print('200 km2 <= AOI < 500 km2 — splitting date range by 10 days.')
+        print('200 km2 <= AOI < 500 km2 — splitting date range by week.')
         # for year in range(date_start.year, date_end.year + 1):
         #     for month in range(month_start, month_end+1):
         #         if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
@@ -170,22 +170,22 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
 
         while current <= date_end:
             if month_start <= current.month <= month_end:
-                biweek_end = min(current + datetime.timedelta(days=9), date_end)
+                biweek_end = min(current + datetime.timedelta(days=6), date_end)
                 if biweek_end.month >= month_start and biweek_end.month <= month_end and current <= biweek_end:
                     ranges.append((current.isoformat(), biweek_end.isoformat()))
-            current += datetime.timedelta(days=10)
+            current += datetime.timedelta(days=7)
 
     elif aoi_area < 1100e6:
-        print('500 km2 <= AOI < 1100 km2 — splitting date range by week.')
+        print('500 km2 <= AOI < 1100 km2 — splitting date range by 5 day increments.')
         current = max(date_start, datetime.date(date_start.year, month_start, 1))
         end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
 
         while current <= date_end:
             if month_start <= current.month <= month_end:
-                week_end = min(current + datetime.timedelta(days=6), date_end)
+                week_end = min(current + datetime.timedelta(days=4), date_end)
                 if week_end.month >= month_start and week_end.month <= month_end and current <= week_end:
                     ranges.append((current.isoformat(), week_end.isoformat()))
-            current += datetime.timedelta(days=7)
+            current += datetime.timedelta(days=5)
 
     else:
         print('AOI >= 1100 km2 — splitting date range by day.')
@@ -489,21 +489,36 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         # ALTERNATE Estimate snowline altitude (SLA): use 5th percentile of snow elevations to minimize debris effects
         snowarea_mask = snow_mask.selfMask()
         snow_dem = dem.updateMask(snowarea_mask)
-        # sla_percentile = ee.Number(5)
-        # print(sla_percentile)
-        # print(ee.List([ee.Number(sla_percentile).toInt()]))
+        sla_percentile = ee.Number(5)
         sla = snow_dem.reduceRegion(
-            reducer=ee.Reducer.percentile([5]),
+            reducer=ee.Reducer.percentile([sla_percentile]),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
             ).get('elevation')
 
+
+        #NEED TO FIX BOUNDS TO MAKE SURE THE LOWER IS ALWAYS < SLA AND UPPER IS ALWAYS > SLA
         # # Estimate upper and lower bounds for the SLA: snow-free pixels above the SLA
+        # Upper bound: max limit of snow-free pixels
+        # # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
+        # # above_sla_mask = dem.gt(ee.Number(sla))
+        # # upper_mask = snow_free_mask.And(above_sla_mask)
+        # # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        # #     reducer=ee.Reducer.sum(),
+        # #     geometry=aoi,
+        # #     scale=scale,
+        # #     maxPixels=1e9,
+        # #     bestEffort=True
+        # # ).get('classification')
+        # # sla_upper_percentile = (ee.Number(sla_percentile)
+        # #                         .add(ee.Number(upper_mask_area)
+        # #                              .divide(ee.Number(aoi.area()))))
         # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
         # above_sla_mask = dem.gt(ee.Number(sla))
-        # upper_mask = snow_free_mask.And(above_sla_mask)
+        # high_ice_mask = snow_free_mask.And(above_sla_mask)
+        # upper_mask = above_sla_mask.subtract(high_ice_mask)
         # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
         #     reducer=ee.Reducer.sum(),
         #     geometry=aoi,
@@ -511,8 +526,8 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         #     maxPixels=1e9,
         #     bestEffort=True
         # ).get('classification')
-        # sla_upper_percentile = (ee.Number(sla_percentile)
-        #                         .add(ee.Number(upper_mask_area)
+        # sla_upper_percentile = (ee.Number(1)
+        #                         .subtract(ee.Number(upper_mask_area)
         #                              .divide(ee.Number(aoi.area()))))
         # sla_upper = dem.reduceRegion(
         #     reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
@@ -521,8 +536,8 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         #     maxPixels=1e9,
         #     bestEffort=True
         #     ).get('elevation')
-        #ALTERNATE Estimate upper and lower bounds for the SLA: use the 10th percentile of snowy pixels
-        # sla_upper_percentile = ee.Number(10)
+        #ALTERNATE Upper bound: use the 10th percentile of snowy pixels
+        # if ee.Number(sla_upper) < ee.Number(sla):
         sla_upper = snow_dem.reduceRegion(
             reducer=ee.Reducer.percentile([10]),
             geometry=aoi,
@@ -531,19 +546,35 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
             bestEffort=True
             ).get('elevation')
         
-        # lower bound: snow-covered pixels below the SLA
-        below_sla_mask = dem.lt(ee.Number(sla))
-        lower_mask = snow_mask.And(below_sla_mask)
-        lower_mask_area = lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        # Lower bound: snow-covered pixels below the SLA
+        # below_sla_mask = dem.lt(ee.Number(sla))
+        # lower_mask = snow_mask.And(below_sla_mask)
+        # lower_mask_area = lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        #     reducer=ee.Reducer.sum(),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        # ).get('classification')
+        # sla_lower_percentile = (ee.Number(sla_percentile)
+        #                         .subtract(ee.Number(lower_mask_area)
+        #                                   .divide(ee.Number(aoi.area()))))
+        # sla_lower = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        # ALTERNATE Lower bound: snow-covered pixels below the SLA (same idea, different approach)
+        lower_mask_area = snowarea_mask.multiply(ee.Image.pixelArea()).reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
-        ).get('classification')
-        sla_lower_percentile = (ee.Number(0.05)
-                                .subtract(ee.Number(lower_mask_area)
-                                          .divide(ee.Number(aoi.area()))))
+            ).get('classification')
+        sla_lower_percentile = (ee.Number(1).subtract(ee.Number(lower_mask_area).divide(ee.Number(aoi.area()))))
         sla_lower = dem.reduceRegion(
             reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
             geometry=aoi,
@@ -564,9 +595,9 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
             'water_area_m2': water_area,
             'glacier_area_m2': glacier_area,
             'transient_AAR': transient_aar,
-            'SLA_m': sla,
-            'SLA_upper_bound_m': sla_upper,
-            'SLA_lower_bound_m': sla_lower
+            'SLA_m': ee.Number(sla).round(),
+            'SLA_upper_bound_m': ee.Number(sla_upper).round(),
+            'SLA_lower_bound_m': ee.Number(sla_lower).round()
         })
 
         return feature
