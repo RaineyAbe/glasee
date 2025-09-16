@@ -9,6 +9,7 @@ import geedim as gd
 import datetime
 import time
 import numpy as np
+import re
 
 # Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
@@ -245,17 +246,23 @@ def query_gee_for_imagery(dataset: str = 'Landsat',
         Image collection of pre-processed, clipped images that meet the search criteria. 
     """ 
     if verbose:
-        print(f'Querying GEE for {dataset} image collection')
-
+        print(f'Querying GEE for {dataset} image collection')    
+    
     # Define image collection
     if dataset=='Landsat':
-        im_col_l8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(date_start, date_end, 
-                                                                                    region=aoi, 
-                                                                                    mask=mask_clouds).ee_collection
-        im_col_l9 = gd.MaskedCollection.from_name('LANDSAT/LC09/C02/T1_L2').search(date_start, date_end, 
-                                                                                    region=aoi, 
-                                                                                    mask=mask_clouds).ee_collection
+        im_col_l8 = gd.MaskedCollection.from_name('LANDSAT/LC08/C02/T1_L2').search(
+            date_start, 
+            date_end, 
+            region=aoi
+            ).ee_collection
+        im_col_l9 = gd.MaskedCollection.from_name('LANDSAT/LC09/C02/T1_L2').search(
+            date_start, 
+            date_end, 
+            region=aoi
+            ).ee_collection
+        # merge Landsat 8 and 9 collections
         im_col = im_col_l8.merge(im_col_l9)
+        # define dataset-specific parameters
         image_scaler = 1/2.75e-05
         refl_bands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7']
         rgb_bands = ['SR_B4', 'SR_B3', 'SR_B2']
@@ -263,17 +270,36 @@ def query_gee_for_imagery(dataset: str = 'Landsat',
 
     elif 'Sentinel-2' in dataset:
         if dataset=='Sentinel-2_SR':
-            im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(date_start, date_end, 
-                                                                                        region=aoi, 
-                                                                                        mask=mask_clouds).ee_collection
+            im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_SR_HARMONIZED').search(
+                date_start, 
+                date_end,
+                region=aoi
+                ).ee_collection
         elif dataset=='Sentinel-2_TOA':
-            im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_HARMONIZED').search(date_start, date_end, 
-                                                                                        region=aoi, 
-                                                                                        mask=mask_clouds).ee_collection
+            im_col = gd.MaskedCollection.from_name('COPERNICUS/S2_HARMONIZED').search(
+                date_start, 
+                date_end, 
+                region=aoi
+                ).ee_collection
+        # define dataset-specific parameters
         image_scaler = 1e4
         refl_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12']
         rgb_bands = ['B4', 'B3', 'B2']
         ndsi_bands = ['B3', 'B11']
+
+    # Mask clouds
+    # (geedim only creates and applies cloud masks on individual image objects)
+    if mask_clouds:
+        def mask_geedim_image(img):
+            if dataset=='Landsat':
+                gd_img = gd.mask.LandsatImage(img)
+            elif dataset=='Sentinel-2_SR':
+                gd_img = gd.mask.Sentinel2SrClImage(img)
+            elif dataset=='Sentinel-2_TOA':
+                gd_img = gd.mask.Sentinel2ToaClImage(img)
+            gd_img.mask_clouds()
+            return gd_img.ee_image
+        im_col = im_col.map(mask_geedim_image)
     
     # Define default image scale if not provided
     if not scale:
@@ -477,18 +503,8 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         # Calculate transient AAR (snow area / glacier area)
         transient_aar = ee.Number(snow_area).divide(ee.Number(glacier_area))
 
-        # # Estimate snowline altitude (SLA) using the transient AAR and the DEM
-        # sla_percentile = (ee.Number(1).subtract(ee.Number(transient_aar)))
-        # sla = dem.reduceRegion(
-        #     reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).multiply(100).toInt()])),
-        #     geometry=aoi,
-        #     scale=scale,
-        #     maxPixels=1e9,
-        #     bestEffort=True
-        #     ).get('elevation')
-        # ALTERNATE Estimate snowline altitude (SLA): use 5th percentile of snow elevations to minimize debris effects
-        snowarea_mask = snow_mask.selfMask()
-        snow_dem = dem.updateMask(snowarea_mask)
+        # Estimate snowline altitude (SLA) using the 5th percentile of snow elevations
+        snow_dem = dem.updateMask(snow_mask.selfMask())
         sla_percentile = ee.Number(5)
         sla = snow_dem.reduceRegion(
             reducer=ee.Reducer.percentile([sla_percentile]),
@@ -498,92 +514,65 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
             bestEffort=True
             ).get('elevation')
 
-
-        #NEED TO FIX BOUNDS TO MAKE SURE THE LOWER IS ALWAYS < SLA AND UPPER IS ALWAYS > SLA
-        # # Estimate upper and lower bounds for the SLA: snow-free pixels above the SLA
-        # Upper bound: max limit of snow-free pixels
-        # # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
-        # # above_sla_mask = dem.gt(ee.Number(sla))
-        # # upper_mask = snow_free_mask.And(above_sla_mask)
-        # # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-        # #     reducer=ee.Reducer.sum(),
-        # #     geometry=aoi,
-        # #     scale=scale,
-        # #     maxPixels=1e9,
-        # #     bestEffort=True
-        # # ).get('classification')
-        # # sla_upper_percentile = (ee.Number(sla_percentile)
-        # #                         .add(ee.Number(upper_mask_area)
-        # #                              .divide(ee.Number(aoi.area()))))
-        # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
-        # above_sla_mask = dem.gt(ee.Number(sla))
-        # high_ice_mask = snow_free_mask.And(above_sla_mask)
-        # upper_mask = above_sla_mask.subtract(high_ice_mask)
-        # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-        #     reducer=ee.Reducer.sum(),
-        #     geometry=aoi,
-        #     scale=scale,
-        #     maxPixels=1e9,
-        #     bestEffort=True
-        # ).get('classification')
-        # sla_upper_percentile = (ee.Number(1)
-        #                         .subtract(ee.Number(upper_mask_area)
-        #                              .divide(ee.Number(aoi.area()))))
-        # sla_upper = dem.reduceRegion(
-        #     reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
-        #     geometry=aoi,
-        #     scale=scale,
-        #     maxPixels=1e9,
-        #     bestEffort=True
-        #     ).get('elevation')
-        #ALTERNATE Upper bound: use the 10th percentile of snowy pixels
-        # if ee.Number(sla_upper) < ee.Number(sla):
-        sla_upper = snow_dem.reduceRegion(
-            reducer=ee.Reducer.percentile([10]),
-            geometry=aoi,
-            scale=scale,
-            maxPixels=1e9,
-            bestEffort=True
-            ).get('elevation')
-        
-        # Lower bound: snow-covered pixels below the SLA
-        # below_sla_mask = dem.lt(ee.Number(sla))
-        # lower_mask = snow_mask.And(below_sla_mask)
-        # lower_mask_area = lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-        #     reducer=ee.Reducer.sum(),
-        #     geometry=aoi,
-        #     scale=scale,
-        #     maxPixels=1e9,
-        #     bestEffort=True
-        # ).get('classification')
-        # sla_lower_percentile = (ee.Number(sla_percentile)
-        #                         .subtract(ee.Number(lower_mask_area)
-        #                                   .divide(ee.Number(aoi.area()))))
-        # sla_lower = dem.reduceRegion(
-        #     reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
-        #     geometry=aoi,
-        #     scale=scale,
-        #     maxPixels=1e9,
-        #     bestEffort=True
-        #     ).get('elevation')
-        # ALTERNATE Lower bound: snow-covered pixels below the SLA (same idea, different approach)
-        lower_mask_area = snowarea_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        # Estimate SLA upper and lower bounds:
+        #   - Upper bound: use the SNOW-FREE AREA ABOVE the SLA to sample the DEM
+        #   - Lower bound: use the SNOW-COVERED AREA BELOW the SLA to sample the DEM
+        # "reference system" switch: identify the DEM percentile corresponding to the SLA
+        below_sla_mask = dem.lt(ee.Number(sla))
+        below_sla_mask_area = below_sla_mask.multiply(ee.Image.pixelArea()).reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
-            ).get('classification')
-        sla_lower_percentile = (ee.Number(1).subtract(ee.Number(lower_mask_area).divide(ee.Number(aoi.area()))))
+        ).get('elevation')
+        sla_percentile_dem = ee.Number(below_sla_mask_area).divide(aoi.area()).multiply(100).toInt()
+        # upper bound 
+        snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
+        above_sla_mask = dem.gt(ee.Number(sla))
+        sla_upper_mask = snow_free_mask.And(above_sla_mask)
+        sla_upper_mask = sla_upper_mask.set('system:time_start', 0) # set arbitrary time for downloading later
+        sla_upper_mask_area = sla_upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+            reducer=ee.Reducer.sum(),
+            geometry=aoi,
+            scale=scale,
+            maxPixels=1e9,
+            bestEffort=True
+        ).get('classification')
+        # DEM percentile to sample = (SLA percentile) + (Area snow-free above SLA) / (Area of glacier)
+        sla_upper_percentile = (ee.Number(sla_percentile_dem)
+                                .add(ee.Number(sla_upper_mask_area)
+                                        .divide(ee.Number(aoi.area())).multiply(100))).toInt()
+        sla_upper = dem.reduceRegion(
+            reducer=ee.Reducer.percentile(ee.List([sla_upper_percentile])),
+            geometry=aoi,
+            scale=scale,
+            maxPixels=1e9,
+            bestEffort=True
+            ).get('elevation')
+        # lower bound 
+        sla_lower_mask = snow_mask.And(below_sla_mask)
+        sla_lower_mask = sla_lower_mask.set('system:time_start', 0) # set arbitrary time for downloading later
+        sla_lower_mask_area = sla_lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+            reducer=ee.Reducer.sum(),
+            geometry=aoi,
+            scale=scale,
+            maxPixels=1e9,
+            bestEffort=True
+        ).get('classification')
+        # DEM percentile to sample = (SLA percentile) - (Area snow-covered below SLA) / (Area of glacier)
+        sla_lower_percentile = (ee.Number(sla_percentile_dem)
+                                .subtract(ee.Number(sla_lower_mask_area)
+                                            .divide(ee.Number(aoi.area())).multiply(100))).toInt()
         sla_lower = dem.reduceRegion(
-            reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
+            reducer=ee.Reducer.percentile(ee.List([sla_lower_percentile])),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
             ).get('elevation')
         
-        # Return feature
+        # Return feature with all properties
         feature = ee.Feature(None, {
             'date': date,
             'source': dataset,
@@ -606,7 +595,7 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     statistics = ee.FeatureCollection(image_collection.map(process_image))
 
     # Export to Google Drive folder
-    alt_fileName = file_name_prefix; #file_name_prefix+'_NEWENDING' if you want to add a new ending
+    alt_fileName = file_name_prefix #file_name_prefix+'_NEWENDING' if you want to add a new ending
     # print(alt_fileName)
     task = ee.batch.Export.table.toDrive(
         collection=statistics, 
@@ -620,13 +609,12 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     def check_queue():
         in_queue = 0
         for task in ee.batch.Task.list():
-            if task.state == 'READY':
+            if (task.state == 'READY') or (task.state == 'RUNNING'):
                 in_queue += 1 # count the queue
         return in_queue
     
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
-    # print(f'...current queue length {queue}')
     while queue >= 2998: # while it's 3000 or more
         #estimate processing time & wait for that long
         sleep_time = 30*int(np.sqrt(aoi.area().getInfo()/1e6))
