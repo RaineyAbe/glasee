@@ -8,6 +8,7 @@ import ee
 import geedim as gd
 import datetime
 import time
+import numpy as np
 
 # Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
@@ -59,7 +60,7 @@ def query_gee_for_dem(aoi):
         dem_name = "REMA Mosaic"
         dem_string = "UMN/PGC/REMA/V1_1/8m"
         
-    # Otherwise, use NASADEM
+    # Otherwise, use NASADEM (may want to change to the Copernicus DEM or EarthDEM if they are on GEE)
     else:
         dem_name = "NASADEM"
         dem_string = "NASA/NASADEM_HGT/001"
@@ -139,8 +140,8 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
     ranges = []
 
     # Determine splitting strategy
-    if aoi_area < 500e6:
-        print('AOI area < 500 km2 — splitting date range by month.')
+    if aoi_area < 200e6:
+        print('AOI area < 200 km2 — splitting date range by month.')
         for year in range(date_start.year, date_end.year + 1):
             for month in range(month_start, month_end+1):
                 if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
@@ -151,18 +152,40 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
                 end = min(end, date_end)
                 if start <= end:
                     ranges.append((start.isoformat(), end.isoformat()))
-
-    elif aoi_area < 1100e6:
-        print('500 km2 <= AOI < 1100 km2 — splitting date range by week.')
+        
+    elif aoi_area < 500e6: 
+        print('200 km2 <= AOI < 500 km2 — splitting date range by week.')
+        # for year in range(date_start.year, date_end.year + 1):
+        #     for month in range(month_start, month_end+1):
+        #         if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
+        #             continue
+        #         start = datetime.date(year, month, 1)
+        #         end = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1) if month == 12 else datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+        #         start = max(start, date_start)
+        #         end = min(end, date_end)
+        #         if start <= end:
+        #             ranges.append((start.isoformat(), end.isoformat()))
         current = max(date_start, datetime.date(date_start.year, month_start, 1))
         end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
 
         while current <= date_end:
             if month_start <= current.month <= month_end:
-                week_end = min(current + datetime.timedelta(days=6), date_end)
+                biweek_end = min(current + datetime.timedelta(days=6), date_end)
+                if biweek_end.month >= month_start and biweek_end.month <= month_end and current <= biweek_end:
+                    ranges.append((current.isoformat(), biweek_end.isoformat()))
+            current += datetime.timedelta(days=7)
+
+    elif aoi_area < 1100e6:
+        print('500 km2 <= AOI < 1100 km2 — splitting date range by 5 day increments.')
+        current = max(date_start, datetime.date(date_start.year, month_start, 1))
+        end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
+
+        while current <= date_end:
+            if month_start <= current.month <= month_end:
+                week_end = min(current + datetime.timedelta(days=4), date_end)
                 if week_end.month >= month_start and week_end.month <= month_end and current <= week_end:
                     ranges.append((current.isoformat(), week_end.isoformat()))
-            current += datetime.timedelta(days=7)
+            current += datetime.timedelta(days=5)
 
     else:
         print('AOI >= 1100 km2 — splitting date range by day.')
@@ -182,10 +205,10 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
 
 def query_gee_for_imagery(dataset: str = 'Landsat', 
                           aoi: ee.Geometry = None, 
-                          date_start: str = '2020-06-01', 
-                          date_end: str = '2020-11-01', 
-                          month_start: int = 6, 
-                          month_end: int = 10, 
+                          date_start: str = '2020-01-01', #default date start
+                          date_end: str = '2020-12-31', #default date end
+                          month_start: int = 5, #default month start (May=5)
+                          month_end: int = 10, #default month end (Oct=10)
                           fill_portion: int = 70, 
                           mask_clouds: bool = True,
                           scale: int = None,
@@ -454,51 +477,104 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         # Calculate transient AAR (snow area / glacier area)
         transient_aar = ee.Number(snow_area).divide(ee.Number(glacier_area))
 
-        # Estimate snowline altitude (SLA) using the transient AAR and the DEM
-        sla_percentile = (ee.Number(1).subtract(ee.Number(transient_aar)))
-        sla = dem.reduceRegion(
-            reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).multiply(100).toInt()])),
+        # # Estimate snowline altitude (SLA) using the transient AAR and the DEM
+        # sla_percentile = (ee.Number(1).subtract(ee.Number(transient_aar)))
+        # sla = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile(ee.List([ee.Number(sla_percentile).multiply(100).toInt()])),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        # ALTERNATE Estimate snowline altitude (SLA): use 5th percentile of snow elevations to minimize debris effects
+        snowarea_mask = snow_mask.selfMask()
+        snow_dem = dem.updateMask(snowarea_mask)
+        sla_percentile = ee.Number(5)
+        sla = snow_dem.reduceRegion(
+            reducer=ee.Reducer.percentile([sla_percentile]),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
             ).get('elevation')
 
-        # Estimate upper and lower bounds for the SLA
-        # upper bound: snow-free pixels above the SLA
-        snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
-        above_sla_mask = dem.gt(ee.Number(sla))
-        upper_mask = snow_free_mask.And(above_sla_mask)
-        upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
-            reducer=ee.Reducer.sum(),
-            geometry=aoi,
-            scale=scale,
-            maxPixels=1e9,
-            bestEffort=True
-        ).get('classification')
-        sla_upper_percentile = (ee.Number(sla_percentile)
-                                .add(ee.Number(upper_mask_area)
-                                     .divide(ee.Number(aoi.area()))))
-        sla_upper = dem.reduceRegion(
-            reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
+
+        #NEED TO FIX BOUNDS TO MAKE SURE THE LOWER IS ALWAYS < SLA AND UPPER IS ALWAYS > SLA
+        # # Estimate upper and lower bounds for the SLA: snow-free pixels above the SLA
+        # Upper bound: max limit of snow-free pixels
+        # # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
+        # # above_sla_mask = dem.gt(ee.Number(sla))
+        # # upper_mask = snow_free_mask.And(above_sla_mask)
+        # # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        # #     reducer=ee.Reducer.sum(),
+        # #     geometry=aoi,
+        # #     scale=scale,
+        # #     maxPixels=1e9,
+        # #     bestEffort=True
+        # # ).get('classification')
+        # # sla_upper_percentile = (ee.Number(sla_percentile)
+        # #                         .add(ee.Number(upper_mask_area)
+        # #                              .divide(ee.Number(aoi.area()))))
+        # snow_free_mask = image.eq(3).Or(image.eq(4)).Or(image.eq(5))
+        # above_sla_mask = dem.gt(ee.Number(sla))
+        # high_ice_mask = snow_free_mask.And(above_sla_mask)
+        # upper_mask = above_sla_mask.subtract(high_ice_mask)
+        # upper_mask_area = upper_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        #     reducer=ee.Reducer.sum(),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        # ).get('classification')
+        # sla_upper_percentile = (ee.Number(1)
+        #                         .subtract(ee.Number(upper_mask_area)
+        #                              .divide(ee.Number(aoi.area()))))
+        # sla_upper = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile([ee.Number(sla_upper_percentile).multiply(100).toInt()]),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        #ALTERNATE Upper bound: use the 10th percentile of snowy pixels
+        # if ee.Number(sla_upper) < ee.Number(sla):
+        sla_upper = snow_dem.reduceRegion(
+            reducer=ee.Reducer.percentile([10]),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
             ).get('elevation')
-        # lower bound: snow-covered pixels below the SLA
-        below_sla_mask = dem.lt(ee.Number(sla))
-        lower_mask = snow_mask.And(below_sla_mask)
-        lower_mask_area = lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        
+        # Lower bound: snow-covered pixels below the SLA
+        # below_sla_mask = dem.lt(ee.Number(sla))
+        # lower_mask = snow_mask.And(below_sla_mask)
+        # lower_mask_area = lower_mask.multiply(ee.Image.pixelArea()).reduceRegion(
+        #     reducer=ee.Reducer.sum(),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        # ).get('classification')
+        # sla_lower_percentile = (ee.Number(sla_percentile)
+        #                         .subtract(ee.Number(lower_mask_area)
+        #                                   .divide(ee.Number(aoi.area()))))
+        # sla_lower = dem.reduceRegion(
+        #     reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
+        #     geometry=aoi,
+        #     scale=scale,
+        #     maxPixels=1e9,
+        #     bestEffort=True
+        #     ).get('elevation')
+        # ALTERNATE Lower bound: snow-covered pixels below the SLA (same idea, different approach)
+        lower_mask_area = snowarea_mask.multiply(ee.Image.pixelArea()).reduceRegion(
             reducer=ee.Reducer.sum(),
             geometry=aoi,
             scale=scale,
             maxPixels=1e9,
             bestEffort=True
-        ).get('classification')
-        sla_lower_percentile = (ee.Number(sla_percentile)
-                                .subtract(ee.Number(lower_mask_area)
-                                          .divide(ee.Number(aoi.area()))))
+            ).get('classification')
+        sla_lower_percentile = (ee.Number(1).subtract(ee.Number(lower_mask_area).divide(ee.Number(aoi.area()))))
         sla_lower = dem.reduceRegion(
             reducer=ee.Reducer.percentile([ee.Number(sla_lower_percentile).multiply(100).toInt()]),
             geometry=aoi,
@@ -519,9 +595,9 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
             'water_area_m2': water_area,
             'glacier_area_m2': glacier_area,
             'transient_AAR': transient_aar,
-            'SLA_m': sla,
-            'SLA_upper_bound_m': sla_upper,
-            'SLA_lower_bound_m': sla_lower
+            'SLA_m': ee.Number(sla).round(),
+            'SLA_upper_bound_m': ee.Number(sla_upper).round(),
+            'SLA_lower_bound_m': ee.Number(sla_lower).round()
         })
 
         return feature
@@ -530,11 +606,13 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     statistics = ee.FeatureCollection(image_collection.map(process_image))
 
     # Export to Google Drive folder
+    alt_fileName = file_name_prefix; #file_name_prefix+'_NEWENDING' if you want to add a new ending
+    # print(alt_fileName)
     task = ee.batch.Export.table.toDrive(
         collection=statistics, 
-        description=file_name_prefix, 
+        description=alt_fileName, 
         folder=out_folder, 
-        fileNamePrefix=file_name_prefix, 
+        fileNamePrefix=alt_fileName, #default is file_name_prefix, change for testing
         fileFormat='CSV', 
         )
 
@@ -548,9 +626,15 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
-    while queue >= 3000: # while it's 3000 or more
-        time.sleep(30) # wait 30 seconds
+    # print(f'...current queue length {queue}')
+    while queue >= 2998: # while it's 3000 or more
+        #estimate processing time & wait for that long
+        sleep_time = 30*int(np.sqrt(aoi.area().getInfo()/1e6))
+        print(f"sleep time = {sleep_time} s")
+        
+        time.sleep(sleep_time) # wait specified time in seconds based on glacier area
         queue = check_queue() # keep checking
+        
     task.start()
 
     if verbose:
@@ -617,9 +701,19 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
         )
     
     # Determine spatial scale
-    if aoi_area > 3000e6:
-        scale = 200
-        print('AOI area > 3000 km2, upscaling imagery to 200 m resolution.')
+    if aoi_area > 200e6:
+        if aoi_area < 500e6:
+            scale = 30
+            print('AOI area between 200-500 km2, upscaling imagery to 30 m resolution.')
+        elif aoi_area < 1100e6:
+            scale = 90
+            print('AOI area between 500-1100 km2, upscaling imagery to 90 m resolution.')
+        elif aoi_area < 3000e6:
+            scale = 180
+            print('AOI area between 1100-3000 km2, upscaling imagery to 180 m resolution.')
+        else:
+            scale = 240
+            print('AOI area > 3000 km2, upscaling imagery to 240 m resolution.')
     elif not scale:
         scale = 30 if (dataset=='Landsat') else 10
 
@@ -629,14 +723,19 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
     # Run the workflow for each day in date range separately
     print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file naming convention:', 
           f"{glac_id}_{dataset}_snow_cover_stats_DATE-START_DATE-END.csv")
-    print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks \n')
+    print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks')
     for date_range in date_ranges:
         print(date_range)
     
         # Query GEE for imagery
         image_collection = query_gee_for_imagery(dataset, aoi, date_range[0], date_range[1], month_start, month_end, 
                                                  min_aoi_coverage, mask_clouds, scale, verbose=verbose)
-    
+
+        # #if the image collection is empty, let the user know
+        # is_empty_test = image_collection.size().eq(0).getInfo()
+        # if is_empty_test == 1:
+        #     print(f"no images returned")
+        
         # Classify image collection
         classified_collection = classify_image_collection(image_collection, dataset, verbose=verbose)
     
