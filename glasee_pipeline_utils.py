@@ -606,7 +606,7 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     statistics = ee.FeatureCollection(image_collection.map(process_image))
 
     # Export to Google Drive folder
-    alt_fileName = file_name_prefix+'_5percsnow'; #file_name_prefix+'_5percsnow'
+    alt_fileName = file_name_prefix; #file_name_prefix+'_NEWENDING' if you want to add a new ending
     # print(alt_fileName)
     task = ee.batch.Export.table.toDrive(
         collection=statistics, 
@@ -626,7 +626,7 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
     
     # wait until task queue is < 3000
     queue = check_queue() # check length of queue
-    print(f'...current queue length {queue}')
+    # print(f'...current queue length {queue}')
     while queue >= 2998: # while it's 3000 or more
         #estimate processing time & wait for that long
         sleep_time = 30*int(np.sqrt(aoi.area().getInfo()/1e6))
@@ -634,9 +634,6 @@ def calculate_snow_cover_statistics(image_collection: ee.ImageCollection,
         
         time.sleep(sleep_time) # wait specified time in seconds based on glacier area
         queue = check_queue() # keep checking
-        
-        #     time.sleep(30) # wait 30 seconds
-        #     queue = check_queue() # keep checking
         
     task.start()
 
