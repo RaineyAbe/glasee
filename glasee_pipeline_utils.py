@@ -31,7 +31,7 @@ def query_gee_for_dem(aoi):
         Digital elevation model (DEM) image.
     """
     
-    print('\nQuerying GEE for DEM')
+    print('Querying GEE for DEM')
 
     # Determine whether to use ArcticDEM, REMA, or NASADEM
     # Check for ArcticDEM coverage
@@ -111,9 +111,9 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
     date_end : str
         End date in 'YYYY-MM-DD' format.
     month_start : int
-        Start month (1–12).
+        Start month (1-12).
     month_end : int
-        End month (1–12).
+        End month (1-12).
 
     Returns
     -------
@@ -141,8 +141,8 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
     ranges = []
 
     # Determine splitting strategy
-    if aoi_area < 200e6:
-        print('AOI area < 200 km2 — splitting date range by month.')
+    if aoi_area < 150e6:
+        print('AOI area < 150 km2 — splitting date range by month.')
         for year in range(date_start.year, date_end.year + 1):
             for month in range(month_start, month_end+1):
                 if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
@@ -154,42 +154,30 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
                 if start <= end:
                     ranges.append((start.isoformat(), end.isoformat()))
         
-    elif aoi_area < 500e6: 
-        print('200 km2 <= AOI < 500 km2 — splitting date range by week.')
-        # for year in range(date_start.year, date_end.year + 1):
-        #     for month in range(month_start, month_end+1):
-        #         if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
-        #             continue
-        #         start = datetime.date(year, month, 1)
-        #         end = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1) if month == 12 else datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
-        #         start = max(start, date_start)
-        #         end = min(end, date_end)
-        #         if start <= end:
-        #             ranges.append((start.isoformat(), end.isoformat()))
-        current = max(date_start, datetime.date(date_start.year, month_start, 1))
-        end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
+    # elif aoi_area < : 
+    #     print('100 km2 <= AOI < 200 km2 — splitting date range by week.')
+    #     # for year in range(date_start.year, date_end.year + 1):
+    #     #     for month in range(month_start, month_end+1):
+    #     #         if (year == date_start.year and month < month_start) or (year == date_end.year and month > month_end):
+    #     #             continue
+    #     #         start = datetime.date(year, month, 1)
+    #     #         end = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1) if month == 12 else datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+    #     #         start = max(start, date_start)
+    #     #         end = min(end, date_end)
+    #     #         if start <= end:
+    #     #             ranges.append((start.isoformat(), end.isoformat()))
+    #     current = max(date_start, datetime.date(date_start.year, month_start, 1))
+    #     end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
 
-        while current <= date_end:
-            if month_start <= current.month <= month_end:
-                biweek_end = min(current + datetime.timedelta(days=6), date_end)
-                if biweek_end.month >= month_start and biweek_end.month <= month_end and current <= biweek_end:
-                    ranges.append((current.isoformat(), biweek_end.isoformat()))
-            current += datetime.timedelta(days=7)
-
-    elif aoi_area < 1100e6:
-        print('500 km2 <= AOI < 1100 km2 — splitting date range by 5 day increments.')
-        current = max(date_start, datetime.date(date_start.year, month_start, 1))
-        end_limit = min(date_end, datetime.date(date_end.year, month_end, 28) + datetime.timedelta(days=4)) # max end-of-month buffer
-
-        while current <= date_end:
-            if month_start <= current.month <= month_end:
-                week_end = min(current + datetime.timedelta(days=4), date_end)
-                if week_end.month >= month_start and week_end.month <= month_end and current <= week_end:
-                    ranges.append((current.isoformat(), week_end.isoformat()))
-            current += datetime.timedelta(days=5)
+    #     while current <= date_end:
+    #         if month_start <= current.month <= month_end:
+    #             biweek_end = min(current + datetime.timedelta(days=6), date_end)
+    #             if biweek_end.month >= month_start and biweek_end.month <= month_end and current <= biweek_end:
+    #                 ranges.append((current.isoformat(), biweek_end.isoformat()))
+    #         current += datetime.timedelta(days=7)
 
     else:
-        print('AOI >= 1100 km2 — splitting date range by day.')
+        print('AOI >= 150 km2 — splitting date range by day.')
         current = max(date_start, datetime.date(date_start.year, month_start, 1))
         while current < date_end:
             if month_start <= current.month <= month_end:
@@ -197,8 +185,6 @@ def split_date_range(aoi_area, dataset, date_start, date_end, month_start, month
             current += datetime.timedelta(days=1)
 
     print(f"Number of date ranges = {len(ranges)}")
-
-    # Determine image scale
 
     return ranges
 
@@ -689,21 +675,22 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
         )
     
     # Determine spatial scale
-    if aoi_area > 200e6:
-        if aoi_area < 500e6:
-            scale = 30
-            print('AOI area between 200-500 km2, upscaling imagery to 30 m resolution.')
-        elif aoi_area < 1100e6:
-            scale = 90
-            print('AOI area between 500-1100 km2, upscaling imagery to 90 m resolution.')
-        elif aoi_area < 3000e6:
-            scale = 180
-            print('AOI area between 1100-3000 km2, upscaling imagery to 180 m resolution.')
-        else:
-            scale = 240
-            print('AOI area > 3000 km2, upscaling imagery to 240 m resolution.')
-    elif not scale:
-        scale = 30 if (dataset=='Landsat') else 10
+    scale = 30 if (dataset=='Landsat') else 10
+    # if aoi_area > 200e6:
+    #     if aoi_area < 500e6:
+    #         scale = 30
+    #         print('AOI area between 200-500 km2, upscaling imagery to 30 m resolution.')
+    #     elif aoi_area < 1100e6:
+    #         scale = 90
+    #         print('AOI area between 500-1100 km2, upscaling imagery to 90 m resolution.')
+    #     elif aoi_area < 3000e6:
+    #         scale = 180
+    #         print('AOI area between 1100-3000 km2, upscaling imagery to 180 m resolution.')
+    #     else:
+    #         scale = 240
+    #         print('AOI area > 3000 km2, upscaling imagery to 240 m resolution.')
+    # elif not scale:
+    #     scale = 30 if (dataset=='Landsat') else 10
 
     # Split date range into smaller date ranges as necessary
     date_ranges = split_date_range(aoi_area, dataset, date_start, date_end, month_start, month_end)
