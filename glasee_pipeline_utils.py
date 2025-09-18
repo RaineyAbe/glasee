@@ -10,6 +10,7 @@ import datetime
 import time
 import numpy as np
 import re
+from tqdm import tqdm
 
 # Grab current datetime for default file name if none is provided
 current_datetime = datetime.datetime.now()
@@ -699,8 +700,8 @@ def run_classification_pipeline(aoi: ee.Geometry.Polygon = None,
     print(f'Exporting snow cover statistics to {out_folder} Google Drive folder with file naming convention:', 
           f"{glac_id}_{dataset}_snow_cover_stats_DATE-START_DATE-END.csv")
     print('To monitor export tasks, see your Google Cloud Console or GEE Task Manager: https://code.earthengine.google.com/tasks')
-    for date_range in date_ranges:
-        print(date_range)
+    print('Iterating over date ranges...')
+    for date_range in tqdm(date_ranges):
     
         # Query GEE for imagery
         image_collection = query_gee_for_imagery(dataset, aoi, date_range[0], date_range[1], month_start, month_end, 
